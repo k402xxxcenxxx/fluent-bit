@@ -10,7 +10,9 @@ set(UNIT_TESTS_FILES
   input_fuzzer.c
   signv4_fuzzer.c
   flb_json_fuzzer.c
+  flb_mp_fuzzer.c
   filter_stdout_fuzzer.c
+  fstore_fuzzer.c
   parser_fuzzer.c
   parse_json_fuzzer.c
   parse_logfmt_fuzzer.c
@@ -24,6 +26,7 @@ set(UNIT_TESTS_FILES
   utils_fuzzer.c
   config_map_fuzzer.c
   record_ac_fuzzer.c
+  config_yaml_fuzzer.c
   )
 
 # Prepare list of unit tests

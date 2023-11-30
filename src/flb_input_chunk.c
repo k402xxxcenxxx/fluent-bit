@@ -1031,7 +1031,6 @@ static struct flb_input_chunk *input_chunk_get(struct flb_input_instance *in,
     int new_chunk = FLB_FALSE;
     size_t out_size;
     struct flb_input_chunk *ic = NULL;
-    size_t expected_chunk_size;
 
     if (tag_len > FLB_INPUT_CHUNK_TAG_MAX) {
         flb_plg_warn(in,
@@ -1185,7 +1184,7 @@ size_t flb_input_chunk_set_limits(struct flb_input_instance *in)
         in->mem_buf_status == FLB_INPUT_PAUSED) {
         in->mem_buf_status = FLB_INPUT_RUNNING;
         if (in->p->cb_resume) {
-            in->p->cb_resume(in->context, in->config);
+            flb_input_resume(in);
             flb_info("[input] %s resume (mem buf overlimit)",
                       in->name);
         }
@@ -1196,7 +1195,7 @@ size_t flb_input_chunk_set_limits(struct flb_input_instance *in)
         in->storage_buf_status == FLB_INPUT_PAUSED) {
         in->storage_buf_status = FLB_INPUT_RUNNING;
         if (in->p->cb_resume) {
-            in->p->cb_resume(in->context, in->config);
+            flb_input_resume(in);
             flb_info("[input] %s resume (storage buf overlimit %zu/%zu)",
                       in->name,
                       ((struct flb_storage_input *)in->storage)->cio->total_chunks_up,
@@ -1391,6 +1390,10 @@ static int input_chunk_append_raw(struct flb_input_instance *in,
     size_t pre_real_size;
     struct flb_input_chunk *ic;
     struct flb_storage_input *si;
+    void  *filtered_data_buffer;
+    size_t filtered_data_size;
+    void  *final_data_buffer;
+    size_t final_data_size;
 
     /* memory ring-buffer checker */
     if (in->storage_type == FLB_STORAGE_MEMRB) {
@@ -1492,26 +1495,48 @@ static int input_chunk_append_raw(struct flb_input_instance *in,
         pre_real_size = flb_input_chunk_get_real_size(ic);
     }
 
-    /* Write the new data */
-    ret = flb_input_chunk_write(ic, buf, buf_size);
-    if (ret == -1) {
-        flb_error("[input chunk] error writing data from %s instance",
-                  in->name);
-        cio_chunk_tx_rollback(ic->chunk);
-        return -1;
-    }
-
 #ifdef FLB_HAVE_CHUNK_TRACE
     flb_chunk_trace_do_input(ic);
 #endif /* FLB_HAVE_CHUNK_TRACE */
 
-    /* Update 'input' metrics */
-#ifdef FLB_HAVE_METRICS
+    filtered_data_buffer = NULL;
+    final_data_buffer = (char *) buf;
+    final_data_size = buf_size;
+
+    /* Apply filters */
+    if (event_type == FLB_INPUT_LOGS) {
+        flb_filter_do(ic,
+                      buf, buf_size,
+                      &filtered_data_buffer,
+                      &filtered_data_size,
+                      tag, tag_len,
+                      in->config);
+
+        final_data_buffer = filtered_data_buffer;
+        final_data_size = filtered_data_size;
+    }
+
+    if (final_data_size > 0){
+        ret = flb_input_chunk_write(ic,
+                                    final_data_buffer,
+                                    final_data_size);
+    }
+    else {
+        ret = 0;
+    }
+
+    if (filtered_data_buffer != NULL &&
+        filtered_data_buffer != buf) {
+        flb_free(filtered_data_buffer);
+    }
+
     if (ret == CIO_OK) {
         ic->added_records =  n_records;
         ic->total_records += n_records;
     }
 
+    /* Update 'input' metrics */
+#ifdef FLB_HAVE_METRICS
     if (ic->total_records > 0) {
         /* timestamp */
         ts = cfl_time_now();
@@ -1530,11 +1555,12 @@ static int input_chunk_append_raw(struct flb_input_instance *in,
     }
 #endif
 
-    /* Apply filters */
-    if (event_type == FLB_INPUT_LOGS) {
-        flb_filter_do(ic,
-                      buf, buf_size,
-                      tag, tag_len, in->config);
+    if (ret == -1) {
+        flb_error("[input chunk] error writing data from %s instance",
+                  in->name);
+        cio_chunk_tx_rollback(ic->chunk);
+
+        return -1;
     }
 
     /* get the chunks content size */
@@ -1724,8 +1750,8 @@ retry:
     /* append chunk raw context to the ring buffer */
     ret = flb_ring_buffer_write(ins->rb, (void *) &cr, sizeof(cr));
     if (ret == -1) {
-        printf("[%s] failed buffer write, retries=%i\n",
-               flb_input_name(ins), retries); fflush(stdout);
+        flb_plg_debug(ins, "failed buffer write, retries=%i\n",
+                      retries);
 
         /* sleep for 100000 microseconds (100 milliseconds) */
         usleep(100000);
@@ -1766,9 +1792,18 @@ void flb_input_chunk_ring_buffer_collector(struct flb_config *ctx, void *data)
         ins = mk_list_entry(head, struct flb_input_instance, _head);
         cr = NULL;
 
-        while ((ret = flb_ring_buffer_read(ins->rb,
-                                           (void *) &cr,
-                                           sizeof(cr))) == 0) {
+        while (1) {
+            if (flb_input_buf_paused(ins) == FLB_TRUE) {
+                break;
+            }
+
+            ret = flb_ring_buffer_read(ins->rb,
+                                       (void *) &cr,
+                                       sizeof(cr));
+            if (ret != 0) {
+                break;
+            }
+
             if (cr) {
                 if (cr->tag) {
                     tag_len = flb_sds_len(cr->tag);

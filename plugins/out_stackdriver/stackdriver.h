@@ -86,6 +86,11 @@
 #define FLB_STACKDRIVER_FAILED_REQUESTS      1001   /* failed requests */
 #endif
 
+// https://grpc.github.io/grpc/core/md_doc_statuscodes.html
+#define GRPC_STATUS_CODES_SIZE 17
+#define PARTIAL_SUCCESS_GRPC_TYPE "type.googleapis.com/google.logging.v2.WriteLogEntriesPartialErrors"
+#define PARTIAL_SUCCESS_GRPC_TYPE_SIZE 66
+
 struct flb_stackdriver_oauth_credentials {
     /* parsed credentials file */
     flb_sds_t type;
@@ -174,6 +179,7 @@ struct flb_stackdriver {
     flb_sds_t http_request_key;
     int http_request_key_size;
     bool autoformat_stackdriver_trace;
+    bool test_log_entry_format;
 
     flb_sds_t stackdriver_agent;
 
